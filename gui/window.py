@@ -3,7 +3,7 @@ from pathlib import Path
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSplitter,
     QTreeView, QTableView, QPushButton,
-    QMessageBox, QInputDialog, QStatusBar, QFileSystemModel, QFrame, QHeaderView
+    QMessageBox, QInputDialog, QStatusBar, QFileSystemModel, QFrame, QHeaderView, QFileDialog
 )
 from PyQt5.QtCore import Qt, QSortFilterProxyModel, QSize
 from PyQt5.QtGui import QIcon, QPalette, QColor, QLinearGradient, QStandardItemModel, QStandardItem
@@ -273,6 +273,20 @@ class MainWindow(QMainWindow):
             }
         """)
         
+        # Ensure important columns are visible and sized
+        header = self.file_view.horizontalHeader()
+        header.setStretchLastSection(False)
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        # Columns: 0 Name, 1 Size, 2 Type, 3 Date Modified
+        self.file_view.setColumnHidden(0, False)
+        self.file_view.setColumnHidden(1, False)
+        self.file_view.setColumnHidden(2, False)
+        self.file_view.setColumnHidden(3, False)
+        self.file_view.setColumnWidth(0, 320)
+        self.file_view.setColumnWidth(1, 120)
+        self.file_view.setColumnWidth(2, 140)
+        self.file_view.setColumnWidth(3, 170)
+        
         self.file_view.setColumnWidth(0, 280)
         self.file_view.doubleClicked.connect(self.open_file)
         self.file_view.setSortingEnabled(True)
@@ -320,6 +334,10 @@ class MainWindow(QMainWindow):
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage("Ready")
 
+        # Clipboard state for Cut/Copy/Paste
+        self.clipboard_paths = []
+        self.clipboard_mode = None  # 'cut' | 'copy'
+
     def apply_dark_theme(self):
         # Set application palette for dark theme
         palette = QPalette()
@@ -365,40 +383,28 @@ class MainWindow(QMainWindow):
                 child.widget().deleteLater()
 
         if section == "File":
-            btn_cmd = QPushButton("🖥 Command Prompt")
-            btn_cmd.setStyleSheet(self.get_button_style())
-            btn_cmd.clicked.connect(self.open_cmd)
-            
-            btn_about = QPushButton("ℹ About")
-            btn_about.setStyleSheet(self.get_button_style())
-            btn_about.clicked.connect(self.show_about)
-            
-            btn_close = QPushButton("❌ Close")
-            btn_close.setStyleSheet(self.get_button_style())
-            btn_close.clicked.connect(self.close)
-            
-            for btn in [btn_cmd, btn_about, btn_close]:
+            for text, cb in [("🖥 Command Prompt", self.open_cmd), ("ℹ About", self.show_about), ("❌ Close", self.close)]:
+                btn = QPushButton(text); btn.setStyleSheet(self.get_button_style()); btn.clicked.connect(cb)
                 self.ribbon_options_layout.addWidget(btn)
 
         elif section == "Home":
-            for label, icon in [
-                ("Cut", "✂"),
-                ("Copy", "📋"),
-                ("Copy Address", "🔗"),
-                ("Paste", "📥"),
-                ("Move", "📂"),
-                ("Compress", "🗜"),
-                ("Rename", "✏"),
-            ]:
-                btn = QPushButton(f"{icon} {label}")
+            actions = [
+                ("✂ Cut", self.on_cut),
+                ("📋 Copy", self.on_copy),
+                ("🔗 Copy Address", self.on_copy_address),
+                ("📥 Paste", self.on_paste),
+                ("📂 Move", self.on_move),
+                ("🗜 Compress", self.on_compress),
+                ("✏ Rename", self.on_rename),
+            ]
+            for label, handler in actions:
+                btn = QPushButton(label)
                 btn.setStyleSheet(self.get_button_style())
+                btn.clicked.connect(handler)
                 self.ribbon_options_layout.addWidget(btn)
 
         elif section == "Settings":
-            settings_label = QLabel("⚙ Settings panel (coming soon)")
-            settings_label.setStyleSheet("color: #ffd700; background-color: #3c3c3c; padding: 8px; border-radius: 4px; border: 1px solid #555;")
-            self.ribbon_options_layout.addWidget(settings_label)
-
+            lbl = QLabel("⚙ Settings panel (coming soon)"); lbl.setStyleSheet("color:#ffd700;"); self.ribbon_options_layout.addWidget(lbl)
         self.header_section = section
 
     def get_button_style(self):
@@ -504,3 +510,162 @@ class MainWindow(QMainWindow):
 
     def show_about(self):
         QMessageBox.information(self, "About", "BrontoBase File Manager\nPowered by PyQt5")
+
+    # ---------------------------
+    # Helpers for selection and refresh
+    # ---------------------------
+    def get_selected_paths(self):
+        indexes = self.file_view.selectionModel().selectedRows(0)
+        paths = []
+        for idx in indexes:
+            src_index = idx
+            paths.append(self.model.filePath(src_index))
+        return paths
+
+    def get_current_dir(self):
+        root_idx = self.file_view.rootIndex()
+        return self.model.filePath(root_idx)
+
+    def refresh_current_dir(self):
+        current_dir = self.get_current_dir()
+        self.file_view.setRootIndex(self.model.index(current_dir))
+        self.file_view.sortByColumn(3, Qt.DescendingOrder)
+
+    # ---------------------------
+    # File operation handlers
+    # ---------------------------
+    def on_copy(self):
+        self.clipboard_paths = self.get_selected_paths()
+        self.clipboard_mode = 'copy'
+        self.status_bar.showMessage(f"Copied {len(self.clipboard_paths)} item(s)", 3000)
+
+    def on_cut(self):
+        self.clipboard_paths = self.get_selected_paths()
+        self.clipboard_mode = 'cut'
+        self.status_bar.showMessage(f"Cut {len(self.clipboard_paths)} item(s)", 3000)
+
+    def on_copy_address(self):
+        from PyQt5.QtGui import QGuiApplication
+        paths = self.get_selected_paths()
+        if not paths:
+            QMessageBox.information(self, "Copy Address", "No items selected.")
+            return
+        QGuiApplication.clipboard().setText("\n".join(paths))
+        self.status_bar.showMessage("Paths copied to clipboard", 3000)
+
+    def on_paste(self):
+        if not self.clipboard_paths or self.clipboard_mode not in ('copy', 'cut'):
+            QMessageBox.information(self, "Paste", "Clipboard is empty.")
+            return
+        dest_dir = self.get_current_dir()
+        if not os.path.isdir(dest_dir):
+            QMessageBox.warning(self, "Paste", "Destination is not a folder.")
+            return
+        errors = []
+        for src in self.clipboard_paths:
+            try:
+                base = os.path.basename(src.rstrip("/\\"))
+                dest = os.path.join(dest_dir, base)
+                if self.clipboard_mode == 'copy':
+                    self.ps_copy(src, dest)
+                else:
+                    self.ps_move(src, dest)
+            except Exception as e:
+                errors.append(f"{src} → {dest_dir}: {e}")
+        if errors:
+            QMessageBox.warning(self, "Paste", "Some items failed to paste:\n" + "\n".join(errors))
+        if self.clipboard_mode == 'cut':
+            # Clear after move
+            self.clipboard_paths = []
+            self.clipboard_mode = None
+        self.refresh_current_dir()
+
+    def on_move(self):
+        paths = self.get_selected_paths()
+        if not paths:
+            QMessageBox.information(self, "Move", "No items selected.")
+            return
+        dest_dir = QFileDialog.getExistingDirectory(self, "Select Destination Folder", self.get_current_dir())
+        if not dest_dir:
+            return
+        errors = []
+        for src in paths:
+            try:
+                base = os.path.basename(src.rstrip("/\\"))
+                dest = os.path.join(dest_dir, base)
+                self.ps_move(src, dest)
+            except Exception as e:
+                errors.append(f"{src} → {dest_dir}: {e}")
+        if errors:
+            QMessageBox.warning(self, "Move", "Some items failed to move:\n" + "\n".join(errors))
+        self.refresh_current_dir()
+
+    def on_compress(self):
+        paths = self.get_selected_paths()
+        if not paths:
+            QMessageBox.information(self, "Compress", "Select at least one file or folder.")
+            return
+        dest_dir = self.get_current_dir()
+        # Name archive
+        base_name, ok = QInputDialog.getText(self, "Archive Name", "Enter archive name (without .zip):", text="Archive")
+        if not ok or not base_name:
+            return
+        archive_path = os.path.join(dest_dir, f"{base_name}.zip")
+        # Build a temp staging folder to zip multiple items
+        import tempfile, shutil
+        staging_dir = tempfile.mkdtemp(prefix="bb_zip_")
+        try:
+            for p in paths:
+                name = os.path.basename(p.rstrip("/\\"))
+                target = os.path.join(staging_dir, name)
+                if os.path.isdir(p):
+                    self.ps_copy(p, target)
+                else:
+                    # ensure parent exists
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    self.ps_copy(p, target)
+            # Use PowerShell Compress-Archive
+            self.ps_compress(staging_dir, archive_path)
+            QMessageBox.information(self, "Compress", f"Created {archive_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Compress", f"Failed to create archive: {e}")
+        finally:
+            shutil.rmtree(staging_dir, ignore_errors=True)
+        self.refresh_current_dir()
+
+    def on_rename(self):
+        paths = self.get_selected_paths()
+        if len(paths) != 1:
+            QMessageBox.information(self, "Rename", "Select exactly one item to rename.")
+            return
+        src = paths[0]
+        new_name, ok = QInputDialog.getText(self, "Rename", "Enter new name:", text=os.path.basename(src))
+        if not ok or not new_name:
+            return
+        dest = os.path.join(os.path.dirname(src), new_name)
+        try:
+            self.ps_rename(src, dest)
+        except Exception as e:
+            QMessageBox.critical(self, "Rename", f"Failed: {e}")
+        self.refresh_current_dir()
+
+    # ---------------------------
+    # PowerShell-backed helpers
+    # ---------------------------
+    def ps_copy(self, src, dest):
+        import subprocess
+        subprocess.run(["powershell", "-NoProfile", "-Command", f"Copy-Item -LiteralPath \"{src}\" -Destination \"{dest}\" -Recurse -Force"], check=True)
+
+    def ps_move(self, src, dest):
+        import subprocess
+        subprocess.run(["powershell", "-NoProfile", "-Command", f"Move-Item -LiteralPath \"{src}\" -Destination \"{dest}\" -Force"], check=True)
+
+    def ps_rename(self, src, dest):
+        import subprocess
+        subprocess.run(["powershell", "-NoProfile", "-Command", f"Rename-Item -LiteralPath \"{src}\" -NewName \"{os.path.basename(dest)}\" -Force"], check=True)
+
+    def ps_compress(self, source_dir, dest_zip):
+        import subprocess
+        # Ensure destination directory exists
+        os.makedirs(os.path.dirname(dest_zip), exist_ok=True)
+        subprocess.run(["powershell", "-NoProfile", "-Command", f"Compress-Archive -Path \"{source_dir}\\*\" -DestinationPath \"{dest_zip}\" -Force"], check=True)
