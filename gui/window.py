@@ -1,12 +1,18 @@
 import os
+import json
+import pickle
 from pathlib import Path
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSplitter,
     QTreeView, QTableView, QPushButton,
-    QMessageBox, QInputDialog, QStatusBar, QFileSystemModel, QFrame, QHeaderView, QFileDialog
+    QMessageBox, QInputDialog, QStatusBar, QFileSystemModel, QFrame, QHeaderView, QFileDialog,
+    QMenu
 )
 from PyQt5.QtCore import Qt, QSortFilterProxyModel, QSize
 from PyQt5.QtGui import QIcon, QPalette, QColor, QLinearGradient, QStandardItemModel, QStandardItem
+
+# Import core modules
+from core import NavigationHistory, FavoritesManager
 
 # ---- add imports for ctypes known folders ----
 import sys
@@ -82,6 +88,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("BrontoBase File Manager")
         self.setGeometry(100, 100, 1200, 750)
+        
+        # Initialize core modules first
+        self.navigation_history = NavigationHistory()
+        self.favorites_manager = FavoritesManager()
         
         # Apply dark theme
         self.apply_dark_theme()
@@ -208,6 +218,9 @@ class MainWindow(QMainWindow):
         self.build_navigation_tree()
         self.nav_tree.expanded.connect(self.on_nav_expanded)
         self.nav_tree.clicked.connect(self.on_nav_clicked)
+        self.nav_tree.doubleClicked.connect(self.on_nav_double_clicked)
+        self.nav_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.nav_tree.customContextMenuRequested.connect(self.on_nav_context_menu)
 
         # File view
         self.file_view = QTableView()
@@ -389,6 +402,8 @@ class MainWindow(QMainWindow):
 
         elif section == "Home":
             actions = [
+                ("⬅ Back", self.on_back),
+                ("➡ Forward", self.on_forward),
                 ("✂ Cut", self.on_cut),
                 ("📋 Copy", self.on_copy),
                 ("🔗 Copy Address", self.on_copy_address),
@@ -396,6 +411,7 @@ class MainWindow(QMainWindow):
                 ("📂 Move", self.on_move),
                 ("🗜 Compress", self.on_compress),
                 ("✏ Rename", self.on_rename),
+                ("⭐ Add to Favorites", self.on_add_to_favorites),
             ]
             for label, handler in actions:
                 btn = QPushButton(label)
@@ -430,6 +446,7 @@ class MainWindow(QMainWindow):
     def build_navigation_tree(self):
         self.nav_model.removeRows(0, self.nav_model.rowCount())
         root = self.nav_model.invisibleRootItem()
+        
         # Quick Access
         qa_root = QStandardItem("📁 Quick Access"); qa_root.setEditable(False); qa_root.setData("__section__", Qt.UserRole+1)
         root.appendRow(qa_root)
@@ -440,6 +457,22 @@ class MainWindow(QMainWindow):
             # lazy child marker
             if os.path.isdir(path):
                 item.appendRow(QStandardItem(""))
+        
+        # Favorites
+        favorites_root = QStandardItem("⭐ Favorites"); favorites_root.setEditable(False); favorites_root.setData("__section__", Qt.UserRole+1)
+        root.appendRow(favorites_root)
+        
+        # Load and display favorites
+        favorites = self.favorites_manager.get_favorites()
+        for fav in favorites:
+            # Create favorite item with special icon
+            icon = "📄" if fav['type'] == 'file' else "📁"
+            item = QStandardItem(f"{icon} {fav['name']}")
+            item.setEditable(False)
+            item.setData(fav['path'], Qt.UserRole)
+            item.setData("__favorite__", Qt.UserRole+1)  # Mark as favorite
+            favorites_root.appendRow(item)
+        
         # Drives
         drives_root = QStandardItem("💽 Drives"); drives_root.setEditable(False); drives_root.setData("__section__", Qt.UserRole+1)
         root.appendRow(drives_root)
@@ -447,7 +480,9 @@ class MainWindow(QMainWindow):
             d_item = self.create_tree_item(drive, drive)
             drives_root.appendRow(d_item)
             d_item.appendRow(QStandardItem(""))  # lazy marker
+        
         self.nav_tree.expand(qa_root.index())
+        self.nav_tree.expand(favorites_root.index())
         self.nav_tree.expand(drives_root.index())
 
     def create_tree_item(self, label: str, path: str) -> QStandardItem:
@@ -463,9 +498,60 @@ class MainWindow(QMainWindow):
     def on_nav_clicked(self, index):
         item = self.nav_model.itemFromIndex(index)
         path = item.data(Qt.UserRole)
-        if path and os.path.exists(path):
-            self.file_view.setRootIndex(self.model.index(path))
-            self.file_view.sortByColumn(3, Qt.DescendingOrder)
+        item_type = item.data(Qt.UserRole+1)
+        
+        if item_type == "__favorite__":
+            # Handle favorite item click - navigate to parent directory
+            self.on_favorite_clicked(index)
+        elif path and os.path.exists(path):
+            self.navigate_to_directory(path)
+
+    def on_nav_double_clicked(self, index):
+        item = self.nav_model.itemFromIndex(index)
+        path = item.data(Qt.UserRole)
+        item_type = item.data(Qt.UserRole+1)
+        
+        if item_type == "__favorite__":
+            # Handle favorite item double-click - open the file/folder
+            self.on_favorite_double_clicked(index)
+        elif path and os.path.exists(path):
+            # For regular items, navigate to them
+            self.navigate_to_directory(path)
+
+    def on_nav_context_menu(self, position):
+        """Handle right-click context menu for navigation tree"""
+        index = self.nav_tree.indexAt(position)
+        if not index.isValid():
+            return
+            
+        item = self.nav_model.itemFromIndex(index)
+        item_type = item.data(Qt.UserRole+1)
+        
+        if item_type == "__favorite__":
+            # Context menu for favorite items
+            menu = QMenu(self)
+            menu.setStyleSheet("""
+                QMenu {
+                    background-color: #2a2a2a;
+                    color: #ccc;
+                    border: 1px solid #555;
+                }
+                QMenu::item {
+                    padding: 8px 20px;
+                }
+                QMenu::item:selected {
+                    background-color: #ffd700;
+                    color: #000;
+                }
+            """)
+            
+            remove_action = menu.addAction("🗑 Remove from Favorites")
+            action = menu.exec_(self.nav_tree.mapToGlobal(position))
+            
+            if action == remove_action:
+                path = item.data(Qt.UserRole)
+                self.remove_favorite(path)
+                self.status_bar.showMessage("Removed from favorites", 2000)
 
     def on_nav_expanded(self, index):
         item = self.nav_model.itemFromIndex(index)
@@ -501,7 +587,7 @@ class MainWindow(QMainWindow):
     def open_file(self, index):
         path = self.model.filePath(index)
         if os.path.isdir(path):
-            self.file_view.setRootIndex(index)
+            self.navigate_to_directory(path)
         elif os.path.isfile(path):
             os.startfile(path)
 
@@ -648,6 +734,96 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Rename", f"Failed: {e}")
         self.refresh_current_dir()
+
+    # ---------------------------
+    # Favorites functionality
+    # ---------------------------
+    def on_add_to_favorites(self):
+        """Add selected files/folders to favorites"""
+        paths = self.get_selected_paths()
+        if not paths:
+            QMessageBox.information(self, "Add to Favorites", "No items selected.")
+            return
+        
+        added_count = 0
+        
+        for path in paths:
+            if self.favorites_manager.add_favorite(path):
+                added_count += 1
+        
+        if added_count > 0:
+            self.status_bar.showMessage(f"Added {added_count} item(s) to favorites", 3000)
+            # Refresh the navigation tree to show new favorites
+            self.build_navigation_tree()
+        else:
+            QMessageBox.information(self, "Add to Favorites", "Selected items are already in favorites or don't exist.")
+
+    def on_favorite_clicked(self, index):
+        """Handle single click on favorite item - navigate to file location"""
+        item = self.nav_model.itemFromIndex(index)
+        path = item.data(Qt.UserRole)
+        if path and os.path.exists(path):
+            # Navigate to the parent directory of the favorite
+            parent_dir = os.path.dirname(path)
+            self.navigate_to_directory(parent_dir)
+            self.status_bar.showMessage(f"Navigated to: {parent_dir}")
+
+    def on_favorite_double_clicked(self, index):
+        """Handle double click on favorite item - open the file"""
+        item = self.nav_model.itemFromIndex(index)
+        path = item.data(Qt.UserRole)
+        if path and os.path.exists(path):
+            if os.path.isfile(path):
+                os.startfile(path)
+                self.status_bar.showMessage(f"Opened: {path}")
+            else:
+                # For folders, navigate to them
+                self.navigate_to_directory(path)
+                self.status_bar.showMessage(f"Navigated to: {path}")
+
+    def remove_favorite(self, path):
+        """Remove a favorite item"""
+        if self.favorites_manager.remove_favorite(path):
+            self.build_navigation_tree()
+
+    # ---------------------------
+    # Navigation helpers
+    # ---------------------------
+    def navigate_to_directory(self, path):
+        """Navigate to a directory and update history"""
+        if not os.path.exists(path) or not os.path.isdir(path):
+            return
+            
+        # Add current location to history before navigating
+        current_path = self.get_current_dir()
+        if current_path and current_path != path:
+            self.navigation_history.add_to_history(current_path)
+            
+        # Navigate to new location
+        self.file_view.setRootIndex(self.model.index(path))
+        self.file_view.sortByColumn(3, Qt.DescendingOrder)
+        
+    def on_back(self):
+        """Navigate back to previous directory"""
+        previous_path = self.navigation_history.go_back()
+        
+        if previous_path:
+            self.file_view.setRootIndex(self.model.index(previous_path))
+            self.file_view.sortByColumn(3, Qt.DescendingOrder)
+            self.status_bar.showMessage(f"Back to: {previous_path}", 2000)
+        else:
+            self.status_bar.showMessage("No more history to go back", 2000)
+            
+    def on_forward(self):
+        """Navigate forward to next directory"""
+        next_path = self.navigation_history.go_forward()
+        
+        if next_path:
+            self.file_view.setRootIndex(self.model.index(next_path))
+            self.file_view.sortByColumn(3, Qt.DescendingOrder)
+            self.status_bar.showMessage(f"Forward to: {next_path}", 2000)
+        else:
+            self.status_bar.showMessage("No more history to go forward", 2000)
 
     # ---------------------------
     # PowerShell-backed helpers
