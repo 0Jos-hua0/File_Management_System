@@ -6,13 +6,13 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSplitter,
     QTreeView, QTableView, QPushButton,
     QMessageBox, QInputDialog, QStatusBar, QFileSystemModel, QFrame, QHeaderView, QFileDialog,
-    QMenu
+    QMenu, QDialog, QLineEdit, QComboBox, QCheckBox, QTextEdit, QProgressBar, QGroupBox
 )
 from PyQt5.QtCore import Qt, QSortFilterProxyModel, QSize
 from PyQt5.QtGui import QIcon, QPalette, QColor, QLinearGradient, QStandardItemModel, QStandardItem
 
 # Import core modules
-from core import NavigationHistory, FavoritesManager
+from core import NavigationHistory, FavoritesManager, FileSearcher
 
 # ---- add imports for ctypes known folders ----
 import sys
@@ -92,6 +92,7 @@ class MainWindow(QMainWindow):
         # Initialize core modules first
         self.navigation_history = NavigationHistory()
         self.favorites_manager = FavoritesManager()
+        self.file_searcher = FileSearcher()
         
         # Apply dark theme
         self.apply_dark_theme()
@@ -404,6 +405,7 @@ class MainWindow(QMainWindow):
             actions = [
                 ("⬅ Back", self.on_back),
                 ("➡ Forward", self.on_forward),
+                ("🔍 Search", self.on_search),
                 ("✂ Cut", self.on_cut),
                 ("📋 Copy", self.on_copy),
                 ("🔗 Copy Address", self.on_copy_address),
@@ -824,6 +826,463 @@ class MainWindow(QMainWindow):
             self.status_bar.showMessage(f"Forward to: {next_path}", 2000)
         else:
             self.status_bar.showMessage("No more history to go forward", 2000)
+
+    # ---------------------------
+    # Search functionality
+    # ---------------------------
+    def on_search(self):
+        """Open search dialog"""
+        search_dialog = SearchDialog(self, self.file_searcher, self.get_current_dir())
+        search_dialog.exec_()
+
+
+class SearchDialog(QDialog):
+    """Search dialog for finding files"""
+    
+    def __init__(self, parent=None, file_searcher=None, search_directory=""):
+        super().__init__(parent)
+        self.file_searcher = file_searcher or FileSearcher()
+        self.search_directory = search_directory
+        self.search_results = []
+        
+        self.setWindowTitle("🔍 Search Files")
+        self.setGeometry(200, 200, 600, 500)
+        self.setup_ui()
+        self.apply_dark_theme()
+    
+    def setup_ui(self):
+        layout = QVBoxLayout()
+        
+        # Search options group
+        options_group = QGroupBox("Search Options")
+        options_layout = QVBoxLayout()
+        
+        # Search type
+        type_layout = QHBoxLayout()
+        type_layout.addWidget(QLabel("Search Type:"))
+        self.search_type = QComboBox()
+        self.search_type.addItems(["Windows Style", "File Name", "Content", "Size", "Date"])
+        self.search_type.currentTextChanged.connect(self.on_search_type_changed)
+        type_layout.addWidget(self.search_type)
+        options_layout.addLayout(type_layout)
+        
+        # Search text
+        text_layout = QHBoxLayout()
+        text_layout.addWidget(QLabel("File Name:"))
+        self.search_text = QLineEdit()
+        self.search_text.setPlaceholderText("Enter filename to search...")
+        text_layout.addWidget(self.search_text)
+        options_layout.addLayout(text_layout)
+        
+        # File type
+        type_input_layout = QHBoxLayout()
+        type_input_layout.addWidget(QLabel("File Type:"))
+        self.file_type_input = QLineEdit()
+        self.file_type_input.setPlaceholderText("pdf, doc, txt (optional)")
+        type_input_layout.addWidget(self.file_type_input)
+        options_layout.addLayout(type_input_layout)
+        
+        # Directory
+        dir_layout = QHBoxLayout()
+        dir_layout.addWidget(QLabel("Directory:"))
+        self.dir_combo = QComboBox()
+        self.dir_combo.setEditable(True)
+        self.dir_combo.setMinimumWidth(300)
+        self.populate_directory_dropdown()
+        self.dir_combo.setCurrentText(self.search_directory)
+        dir_layout.addWidget(self.dir_combo)
+        self.browse_btn = QPushButton("Browse")
+        self.browse_btn.clicked.connect(self.browse_directory)
+        dir_layout.addWidget(self.browse_btn)
+        self.refresh_btn = QPushButton("🔄")
+        self.refresh_btn.setToolTip("Refresh directory list")
+        self.refresh_btn.clicked.connect(self.populate_directory_dropdown)
+        dir_layout.addWidget(self.refresh_btn)
+        options_layout.addLayout(dir_layout)
+        
+        # Recursive search
+        self.recursive_check = QCheckBox("Search subdirectories")
+        self.recursive_check.setChecked(True)
+        options_layout.addWidget(self.recursive_check)
+        
+        # Advanced options (initially hidden)
+        self.advanced_group = QGroupBox("Advanced Options")
+        self.advanced_layout = QVBoxLayout()
+        
+        # File extensions for content search
+        ext_layout = QHBoxLayout()
+        ext_layout.addWidget(QLabel("File Extensions:"))
+        self.extensions_input = QLineEdit()
+        self.extensions_input.setPlaceholderText("txt,doc,pdf (comma separated)")
+        ext_layout.addWidget(self.extensions_input)
+        self.advanced_layout.addLayout(ext_layout)
+        
+        # Size range
+        size_layout = QHBoxLayout()
+        size_layout.addWidget(QLabel("Size Range (MB):"))
+        self.min_size = QLineEdit()
+        self.min_size.setPlaceholderText("Min")
+        size_layout.addWidget(self.min_size)
+        size_layout.addWidget(QLabel("to"))
+        self.max_size = QLineEdit()
+        self.max_size.setPlaceholderText("Max")
+        size_layout.addWidget(self.max_size)
+        self.advanced_layout.addLayout(size_layout)
+        
+        # Date range
+        date_layout = QHBoxLayout()
+        date_layout.addWidget(QLabel("Date Range:"))
+        self.start_date = QLineEdit()
+        self.start_date.setPlaceholderText("YYYY-MM-DD")
+        date_layout.addWidget(self.start_date)
+        date_layout.addWidget(QLabel("to"))
+        self.end_date = QLineEdit()
+        self.end_date.setPlaceholderText("YYYY-MM-DD")
+        date_layout.addWidget(self.end_date)
+        self.advanced_layout.addLayout(date_layout)
+        
+        self.advanced_group.setLayout(self.advanced_layout)
+        self.advanced_group.setVisible(False)
+        options_layout.addWidget(self.advanced_group)
+        
+        options_group.setLayout(options_layout)
+        layout.addWidget(options_group)
+        
+        # Search button
+        self.search_btn = QPushButton("🔍 Search")
+        self.search_btn.clicked.connect(self.perform_search)
+        layout.addWidget(self.search_btn)
+        
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+        
+        # Results
+        results_group = QGroupBox("Search Results")
+        results_layout = QVBoxLayout()
+        
+        self.results_text = QTextEdit()
+        self.results_text.setReadOnly(True)
+        results_layout.addWidget(self.results_text)
+        
+        # Results actions
+        actions_layout = QHBoxLayout()
+        self.open_btn = QPushButton("Open Selected")
+        self.open_btn.clicked.connect(self.open_selected)
+        self.open_btn.setEnabled(False)
+        actions_layout.addWidget(self.open_btn)
+        
+        self.navigate_btn = QPushButton("Navigate to Selected")
+        self.navigate_btn.clicked.connect(self.navigate_to_selected)
+        self.navigate_btn.setEnabled(False)
+        actions_layout.addWidget(self.navigate_btn)
+        
+        self.clear_btn = QPushButton("Clear Results")
+        self.clear_btn.clicked.connect(self.clear_results)
+        actions_layout.addWidget(self.clear_btn)
+        
+        results_layout.addLayout(actions_layout)
+        results_group.setLayout(results_layout)
+        layout.addWidget(results_group)
+        
+        self.setLayout(layout)
+    
+    def apply_dark_theme(self):
+        """Apply dark theme to the dialog"""
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #2a2a2a;
+                color: #ccc;
+            }
+            QGroupBox {
+                background-color: #333333;
+                border: 1px solid #555555;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+                color: #ffd700;
+                font-weight: bold;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 0 5px 0 5px;
+            }
+            QLineEdit, QComboBox, QTextEdit {
+                background-color: #3a3a3a;
+                color: #ccc;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                padding: 5px;
+            }
+            QPushButton {
+                background-color: #333333;
+                color: #ffd700;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 8px 15px;
+            }
+            QPushButton:hover {
+                background-color: #444444;
+                border: 1px solid #ffd700;
+            }
+            QPushButton:disabled {
+                background-color: #222222;
+                color: #666666;
+                border: 1px solid #444444;
+            }
+            QProgressBar {
+                border: 1px solid #555555;
+                border-radius: 3px;
+                text-align: center;
+                background-color: #3a3a3a;
+            }
+            QProgressBar::chunk {
+                background-color: #ffd700;
+                border-radius: 2px;
+            }
+        """)
+    
+    def on_search_type_changed(self, search_type):
+        """Handle search type change"""
+        is_windows_style = search_type == "Windows Style"
+        self.file_type_input.setVisible(is_windows_style)
+        self.advanced_group.setVisible(search_type in ["Content", "Size", "Date"])
+        
+        # Update placeholders based on search type
+        if search_type == "Windows Style":
+            self.search_text.setPlaceholderText("Enter filename to search...")
+            self.file_type_input.setPlaceholderText("pdf, doc, txt (optional)")
+        elif search_type == "File Name":
+            self.search_text.setPlaceholderText("Enter file pattern (e.g., *.txt)")
+        elif search_type == "Content":
+            self.search_text.setPlaceholderText("Enter text to search for...")
+        else:
+            self.search_text.setPlaceholderText("Enter search term...")
+    
+    def populate_directory_dropdown(self):
+        """Populate the directory dropdown with available directories"""
+        self.dir_combo.clear()
+        
+        # Add common directories
+        common_dirs = []
+        
+        # User's home directory
+        home_dir = os.path.expanduser("~")
+        if os.path.exists(home_dir):
+            common_dirs.append(home_dir)
+        
+        # Windows special folders
+        if os.name == 'nt':  # Windows
+            special_folders = [
+                os.path.join(home_dir, "Documents"),
+                os.path.join(home_dir, "Downloads"),
+                os.path.join(home_dir, "Desktop"),
+                os.path.join(home_dir, "Pictures"),
+                os.path.join(home_dir, "Music"),
+                os.path.join(home_dir, "Videos"),
+                os.path.join(home_dir, "OneDrive"),
+                os.path.join(home_dir, "AppData", "Local"),
+                os.path.join(home_dir, "AppData", "Roaming"),
+            ]
+            
+            for folder in special_folders:
+                if os.path.exists(folder):
+                    common_dirs.append(folder)
+        
+        # Add drives (Windows)
+        if os.name == 'nt':
+            import string
+            for drive in string.ascii_uppercase:
+                drive_path = f"{drive}:\\"
+                if os.path.exists(drive_path):
+                    common_dirs.append(drive_path)
+        
+        # Add current search directory if not already in list
+        if self.search_directory and self.search_directory not in common_dirs:
+            common_dirs.insert(0, self.search_directory)
+        
+        # Add directories to combo box
+        for directory in common_dirs:
+            self.dir_combo.addItem(directory)
+    
+    def browse_directory(self):
+        """Browse for search directory"""
+        current_dir = self.dir_combo.currentText() if self.dir_combo.currentText() else self.search_directory
+        directory = QFileDialog.getExistingDirectory(self, "Select Search Directory", current_dir)
+        if directory:
+            # Add to combo box if not already present
+            if self.dir_combo.findText(directory) == -1:
+                self.dir_combo.addItem(directory)
+            self.dir_combo.setCurrentText(directory)
+    
+    def perform_search(self):
+        """Perform the search based on selected options"""
+        search_directory = self.dir_combo.currentText()
+        if not search_directory or not os.path.exists(search_directory):
+            QMessageBox.warning(self, "Search Error", "Please select a valid directory.")
+            return
+        
+        search_type = self.search_type.currentText()
+        search_text = self.search_text.text().strip()
+        
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)  # Indeterminate progress
+        self.search_btn.setEnabled(False)
+        self.results_text.clear()
+        
+        try:
+            if search_type == "Windows Style":
+                if not search_text:
+                    QMessageBox.warning(self, "Search Error", "Please enter a filename to search for.")
+                    return
+                file_type = self.file_type_input.text().strip()
+                results = self.file_searcher.search_files_windows_style(
+                    search_text, 
+                    file_type, 
+                    search_directory
+                )
+                self.display_windows_style_results(results)
+                
+            elif search_type == "File Name":
+                if not search_text:
+                    QMessageBox.warning(self, "Search Error", "Please enter a search term.")
+                    return
+                results = self.file_searcher.search_files(
+                    search_directory, 
+                    search_text, 
+                    self.recursive_check.isChecked()
+                )
+                self.display_results(results)
+                
+            elif search_type == "Content":
+                if not search_text:
+                    QMessageBox.warning(self, "Search Error", "Please enter text to search for.")
+                    return
+                extensions = None
+                if self.extensions_input.text().strip():
+                    extensions = [ext.strip() for ext in self.extensions_input.text().split(",")]
+                results = self.file_searcher.search_by_content(search_directory, search_text, extensions)
+                self.display_results(results)
+                
+            elif search_type == "Size":
+                min_size = None
+                max_size = None
+                if self.min_size.text().strip():
+                    try:
+                        min_size = int(float(self.min_size.text()) * 1024 * 1024)  # Convert MB to bytes
+                    except ValueError:
+                        pass
+                if self.max_size.text().strip():
+                    try:
+                        max_size = int(float(self.max_size.text()) * 1024 * 1024)  # Convert MB to bytes
+                    except ValueError:
+                        pass
+                results = self.file_searcher.search_by_size(search_directory, min_size, max_size)
+                self.display_size_results(results)
+                
+            elif search_type == "Date":
+                start_date = self.start_date.text().strip() or None
+                end_date = self.end_date.text().strip() or None
+                results = self.file_searcher.search_by_date(search_directory, start_date, end_date)
+                self.display_size_results(results)
+                
+        except Exception as e:
+            QMessageBox.critical(self, "Search Error", f"An error occurred during search: {str(e)}")
+        finally:
+            self.progress_bar.setVisible(False)
+            self.search_btn.setEnabled(True)
+    
+    def display_results(self, results):
+        """Display search results"""
+        self.search_results = results
+        if not results:
+            self.results_text.setText("No results found.")
+            self.open_btn.setEnabled(False)
+            self.navigate_btn.setEnabled(False)
+            return
+        
+        result_text = f"Found {len(results)} result(s):\n\n"
+        for i, result in enumerate(results, 1):
+            result_text += f"{i}. {result}\n"
+        
+        self.results_text.setText(result_text)
+        self.open_btn.setEnabled(True)
+        self.navigate_btn.setEnabled(True)
+    
+    def display_windows_style_results(self, results):
+        """Display Windows-style search results with similarity scores"""
+        self.search_results = [result['path'] for result in results]
+        if not results:
+            self.results_text.setText("No results found.")
+            self.open_btn.setEnabled(False)
+            self.navigate_btn.setEnabled(False)
+            return
+        
+        result_text = f"Found {len(results)} result(s):\n\n"
+        for i, result in enumerate(results, 1):
+            size_str = self.file_searcher.format_size(result['size'])
+            similarity_percent = int(result['similarity'] * 100)
+            result_text += f"{i}. {result['name']} ({result['extension']}) - {size_str}\n"
+            result_text += f"   Path: {result['path']}\n"
+            result_text += f"   Relevance: {similarity_percent}% | Modified: {result['modified']}\n\n"
+        
+        self.results_text.setText(result_text)
+        self.open_btn.setEnabled(True)
+        self.navigate_btn.setEnabled(True)
+    
+    def display_size_results(self, results):
+        """Display size/date search results"""
+        self.search_results = [result['path'] for result in results]
+        if not results:
+            self.results_text.setText("No results found.")
+            self.open_btn.setEnabled(False)
+            self.navigate_btn.setEnabled(False)
+            return
+        
+        result_text = f"Found {len(results)} result(s):\n\n"
+        for i, result in enumerate(results, 1):
+            size_str = self.file_searcher.format_size(result['size'])
+            result_text += f"{i}. {result['path']} ({size_str}, {result['modified']})\n"
+        
+        self.results_text.setText(result_text)
+        self.open_btn.setEnabled(True)
+        self.navigate_btn.setEnabled(True)
+    
+    def open_selected(self):
+        """Open the selected file"""
+        if not self.search_results:
+            return
+        
+        # For simplicity, open the first result
+        # In a real implementation, you'd want to get the selected line
+        if self.search_results:
+            file_path = self.search_results[0]
+            if os.path.exists(file_path):
+                os.startfile(file_path)
+    
+    def navigate_to_selected(self):
+        """Navigate to the selected file's directory"""
+        if not self.search_results:
+            return
+        
+        # For simplicity, navigate to the first result
+        if self.search_results:
+            file_path = self.search_results[0]
+            if os.path.exists(file_path):
+                parent_dir = os.path.dirname(file_path)
+                # Navigate in the parent window
+                if hasattr(self.parent(), 'navigate_to_directory'):
+                    self.parent().navigate_to_directory(parent_dir)
+                    self.accept()  # Close the dialog
+    
+    def clear_results(self):
+        """Clear search results"""
+        self.results_text.clear()
+        self.search_results = []
+        self.open_btn.setEnabled(False)
+        self.navigate_btn.setEnabled(False)
 
     # ---------------------------
     # PowerShell-backed helpers
