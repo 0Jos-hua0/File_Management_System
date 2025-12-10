@@ -4,11 +4,15 @@ import pickle
 from pathlib import Path
 from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSplitter,
-    QTreeView, QTableView, QPushButton,
+    QTreeView, QTableView, QPushButton, QListView, QStackedWidget, QRadioButton, QButtonGroup,
     QMessageBox, QInputDialog, QStatusBar, QFileSystemModel, QFrame, QHeaderView, QFileDialog,
-    QMenu, QDialog, QLineEdit, QComboBox, QCheckBox, QTextEdit, QProgressBar, QGroupBox, QApplication
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSplitter,
+    QTreeView, QTableView, QPushButton, QListView, QStackedWidget, QRadioButton, QButtonGroup,
+    QMessageBox, QInputDialog, QStatusBar, QFileSystemModel, QFrame, QHeaderView, QFileDialog,
+    QMenu, QDialog, QLineEdit, QComboBox, QCheckBox, QTextEdit, QProgressBar, QGroupBox, QApplication,
+    QTabWidget, QFormLayout, QFontComboBox, QSpinBox
 )
-from PyQt5.QtCore import Qt, QSortFilterProxyModel, QSize, QDir
+from PyQt5.QtCore import Qt, QSortFilterProxyModel, QSize, QDir, QFileInfo, QDateTime
 from PyQt5.QtGui import QIcon, QPalette, QColor, QLinearGradient, QStandardItemModel, QStandardItem, QFont
 
 # Assume core modules exist in a 'core' directory
@@ -96,6 +100,29 @@ class DirsOnlyProxyModel(QSortFilterProxyModel):
         index = self.sourceModel().index(source_row, 0, source_parent)
         return self.sourceModel().isDir(index)
 
+class FileSystemProxyModel(QSortFilterProxyModel):
+    def __init__(self):
+        super().__init__()
+        self.show_extensions = True
+
+    def set_show_extensions(self, show):
+        self.show_extensions = show
+        # Invalidate data to trigger refresh
+        self.dataChanged.emit(self.index(0, 0), self.index(self.rowCount(), 0))
+        # Sometimes layoutChanged is needed for deeper refresh
+        self.layoutChanged.emit()
+
+    def data(self, index, role=Qt.DisplayRole):
+        if role == Qt.DisplayRole and index.column() == 0 and not self.show_extensions:
+            # Get original name
+            source_index = self.mapToSource(index)
+            # QFileSystemModel uses the file name for display
+            original_name = self.sourceModel().data(source_index, Qt.DisplayRole)
+            if original_name and not self.sourceModel().isDir(source_index):
+                return os.path.splitext(original_name)[0]
+        return super().data(index, role)
+
+
 # ---- Known Folders support ----
 if sys.platform.startswith('win'):
     _SHGetKnownFolderPath = ctypes.windll.shell32.SHGetKnownFolderPath
@@ -173,7 +200,7 @@ class MainWindow(QMainWindow):
 
         # === Header Section (Row 1) ===
         header_row = QWidget()
-        header_row.setStyleSheet("background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 #2c2c2c, stop: 1 #4a4a4a); border-bottom: 1px solid #1a1a1a;")
+        header_row.setStyleSheet("background: #20201f; border-bottom: 1px solid #1a1a1a;")
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(5, 5, 5, 5)
         header_layout.setSpacing(10)
@@ -202,20 +229,22 @@ class MainWindow(QMainWindow):
 
         # === Ribbon Options Row (Row 2) ===
         self.ribbon_options_row = QWidget()
-        self.ribbon_options_row.setStyleSheet("background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 #3c3c3c, stop: 1 #5a5a5a); border-bottom: 2px solid #2a2a2a;")
+        self.ribbon_options_row.setStyleSheet("background: #20201f; border-bottom: 2px solid #20201f;")
         self.ribbon_options_layout = QHBoxLayout()
         self.ribbon_options_layout.setContentsMargins(10, 5, 10, 5)
         self.ribbon_options_layout.setSpacing(15)
-        self.ribbon_options_row.setFixedHeight(60)
+        self.ribbon_options_row.setFixedHeight(95)
         self.ribbon_options_row.setLayout(self.ribbon_options_layout)
 
         # === NEW: Address Bar Section (Row 3) ===
         address_bar_container = QWidget()
-        address_bar_container.setStyleSheet("background-color: #2a2a2a; padding: 5px; border-bottom: 1px solid #444;")
+        address_bar_container.setStyleSheet("background-color: #20201f;")
         address_layout = QHBoxLayout()
-        address_layout.setContentsMargins(5, 0, 5, 0)
-
+        address_layout.setContentsMargins(55, 0, 55, 0)
+        address_bar_container.setFixedHeight(50)
+        
         self.path_edit = QLineEdit()
+        
         self.path_edit.setFixedHeight(30)
         self.path_edit.setStyleSheet("""
             QLineEdit {
@@ -252,7 +281,7 @@ class MainWindow(QMainWindow):
         self.nav_tree.setHeaderHidden(False)
         self.nav_tree.setStyleSheet("""
             QTreeView {
-                background:#2a2a2a; color:#ccc; border:none;
+                background:#20201f; color:#ccc; border:none;
                 alternate-background-color:#333333; outline: 0;
                 font-size: 10pt; /* Uniform font size */
             }
@@ -269,7 +298,7 @@ class MainWindow(QMainWindow):
         # Style the tree view header specifically
         self.nav_tree.header().setStyleSheet("""
             QHeaderView::section {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3c3c3c, stop:1 #2a2a2a);
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3c3c3c, stop:1 #20201f);
                 color: #ffd700; padding: 5px; border: 1px solid #555;
                 font-weight: bold; border-bottom: 2px solid #555;
             }
@@ -282,67 +311,52 @@ class MainWindow(QMainWindow):
         self.nav_tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.nav_tree.customContextMenuRequested.connect(self.on_nav_context_menu)
 
-        # === File View (QTableView) ===
+        # === Proxy Model ===
+        self.proxy_model = FileSystemProxyModel()
+        self.proxy_model.setSourceModel(self.model)
+
+        # === File View (QTableView - List View) ===
         self.file_view = QTableView()
-        self.file_view.setModel(self.model)
-        self.file_view.setRootIndex(self.model.index(self.model.rootPath()))
+        self.file_view.setModel(self.proxy_model)
+        # We need to map the root path to the proxy index
+        root_idx = self.model.index(self.model.rootPath())
+        self.file_view.setRootIndex(self.proxy_model.mapFromSource(root_idx))
         self.file_view.setSelectionBehavior(QTableView.SelectRows)
         self.file_view.setAlternatingRowColors(True)
 
         self.file_view.setStyleSheet("""
     QTableView {
-        background:#111111;                  /* Darker Base (was #191919) */
+        background:#111111;
         color:#ccc;
-        alternate-background-color:#181818; /* Darker Alternate Base (was #202020) */
+        alternate-background-color:#181818;
         border:none; outline: 0;
         font-size: 10pt;
     }
     QTableView::item { padding: 5px; border: none; }
     QTableView::item:selected {
-        /* Gold selection style is unchanged */
         background: qlineargradient(x1:0,y1:0,x2:0,y2:1, stop:0 #b8860b, stop:1 #ffd700);
         color:#000; font-weight:bold;
     }
     QTableView::item:hover:!selected {
-        background-color: #2b2b2b; /* Darker Hover (was #383838) */
+        background-color: #2b2b2b;
     }
-    /* --- Darker Scrollbar Styling --- */
-    QScrollBar:vertical {
-        border: none;
-        background: #181818; /* Darker Track (was #2a2a2a) */
-        width: 12px; margin: 0px 0px 0px 0px;
+    QScrollBar:vertical, QScrollBar:horizontal {
+        border: none; background: #181818;
+        width: 12px; height: 12px;
     }
-    QScrollBar::handle:vertical {
-        background: #444444; /* Darker Handle (was #555) */
-        border-radius: 6px; min-height: 20px;
+    QScrollBar::handle:vertical, QScrollBar::handle:horizontal {
+        background: #444444; border-radius: 6px; min-height: 20px;
     }
-    QScrollBar::handle:vertical:hover {
-        background: #555555; /* Darker Handle Hover (was #666) */
-    }
-    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
-        border: none; background: none; height: 0px;
-    }
-    QScrollBar:horizontal {
-        border: none;
-        background: #181818; /* Darker Track (was #2a2a2a) */
-        height: 12px; margin: 0px 0px 0px 0px;
-    }
-    QScrollBar::handle:horizontal {
-        background: #444444; /* Darker Handle (was #555) */
-        border-radius: 6px; min-width: 20px;
-    }
-    QScrollBar::handle:horizontal:hover {
-        background: #555555; /* Darker Handle Hover (was #666) */
-    }
-    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
-        border: none; background: none; width: 0px;
-    }
+    QScrollBar::handle:hover { background: #555555; }
+    QScrollBar::add-line, QScrollBar::sub-line { border: none; background: none; }
+    QTableCornerButton::section { background: #20201f; border: none; }
 """)
 
         # Style the file view headers
         header_style = """
+            QHeaderView { background: #20201f; }
             QHeaderView::section {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3c3c3c, stop:1 #2a2a2a);
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #3c3c3c, stop:1 #20201f);
                 color: #ffd700; padding: 5px; border: none; border-right: 1px solid #555;
                 font-weight: bold;
             }
@@ -362,6 +376,41 @@ class MainWindow(QMainWindow):
         self.file_view.doubleClicked.connect(self.open_file)
         self.file_view.setSortingEnabled(True)
         self.file_view.sortByColumn(3, Qt.DescendingOrder)
+        self.file_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.file_view.customContextMenuRequested.connect(self.on_file_context_menu)
+
+        # === Grid View (QListView) ===
+        self.file_grid_view = QListView()
+        self.file_grid_view.setModel(self.proxy_model)
+        self.file_grid_view.setRootIndex(self.proxy_model.mapFromSource(root_idx))
+        self.file_grid_view.setViewMode(QListView.IconMode)
+        self.file_grid_view.setIconSize(QSize(64, 64))
+        self.file_grid_view.setGridSize(QSize(100, 100))
+        self.file_grid_view.setResizeMode(QListView.Adjust)
+        self.file_grid_view.setUniformItemSizes(True)
+        self.file_grid_view.setWordWrap(True)
+        self.file_grid_view.setSelectionMode(QListView.ExtendedSelection)
+        self.file_grid_view.setStyleSheet("""
+            QListView {
+                background: #111111; color: #ccc; border: none; outline: 0;
+            }
+            QListView::item {
+                padding: 5px; border: none; border-radius: 5px;
+            }
+            QListView::item:selected {
+                background-color: rgba(255, 215, 0, 0.3);
+                border: 1px solid #ffd700;
+                color: #ffd700;
+            }
+        """)
+        self.file_grid_view.doubleClicked.connect(self.open_file)
+        self.file_grid_view.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.file_grid_view.customContextMenuRequested.connect(self.on_file_context_menu)
+
+        # === View Stack ===
+        self.view_stack = QStackedWidget()
+        self.view_stack.addWidget(self.file_view)      # Index 0: List
+        self.view_stack.addWidget(self.file_grid_view) # Index 1: Grid
 
         # === Splitter ===
         tree_and_files_splitter = QSplitter(Qt.Horizontal)
@@ -373,7 +422,8 @@ class MainWindow(QMainWindow):
             QSplitter::handle:hover { background-color:#ffd700; }
         """)
         tree_and_files_splitter.addWidget(self.nav_tree)
-        tree_and_files_splitter.addWidget(self.file_view)
+        tree_and_files_splitter.addWidget(self.view_stack)
+
         tree_and_files_splitter.setSizes([300, 900])
 
         # === Layout Central Widget ===
@@ -407,13 +457,23 @@ class MainWindow(QMainWindow):
 
     def _create_icons(self):
         """Creates and stores QIcons for the application."""
+        # Resolve absolute path to assets directory
+        # window.py is in gui/, so we go up one level to find assets
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        assets_dir = os.path.join(base_dir, "assets")
 
         def get_icon_path(name):
-            return os.path.join("assets", "icons", name)
+            # Try to find the icon in known subdirectories
+            for sub in ["file_icons", "icons"]:
+                path = os.path.join(assets_dir, sub, name)
+                if os.path.exists(path):
+                    return path
+            # Return a valid path string even if it doesn't exist, to avoid crashes in QIcon
+            return os.path.join(assets_dir, "file_icons", name)
 
         self.icons = {
             'quick_access': QIcon.fromTheme("folder", QIcon(get_icon_path("quick_access.png"))),
-            'favorites': QIcon.fromTheme("emblem-favorite", QIcon(get_icon_path("favorites.png"))),
+            'favorites': QIcon.fromTheme("emblem-favorite", QIcon(get_icon_path("favourites.png"))),
             'drives': QIcon.fromTheme("drive-harddisk", QIcon(get_icon_path("drives.png"))),
             'documents': QIcon.fromTheme("folder-documents", QIcon(get_icon_path("documents.png"))),
             'downloads': QIcon.fromTheme("folder-download", QIcon(get_icon_path("downloads.png"))),
@@ -428,10 +488,11 @@ class MainWindow(QMainWindow):
 
     def apply_dark_theme(self):
         palette = QPalette()
-        palette.setColor(QPalette.Window, QColor(420, 42, 42))
-        palette.setColor(QPalette.WindowText, QColor(4, 204, 204))
-        palette.setColor(QPalette.Base, QColor(250, 250, 250))          # Darker base
-        palette.setColor(QPalette.AlternateBase, QColor(132, 32, 32))
+        # --- FIXED: Clamped invalid RGB values to the valid 0-255 range ---
+        palette.setColor(QPalette.Window, QColor(32, 32, 31))
+        palette.setColor(QPalette.WindowText, QColor(204, 204, 204))
+        palette.setColor(QPalette.Base, QColor(25, 25, 25))
+        palette.setColor(QPalette.AlternateBase, QColor(32, 32, 32))
         palette.setColor(QPalette.ToolTipBase, QColor(255, 215, 0))
         palette.setColor(QPalette.ToolTipText, QColor(0, 0, 0))
         palette.setColor(QPalette.Text, QColor(204, 204, 204))
@@ -443,13 +504,13 @@ class MainWindow(QMainWindow):
         palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
         palette.setColor(QPalette.Light, QColor(60, 60, 60))
         palette.setColor(QPalette.Midlight, QColor(50, 50, 50))
-        palette.setColor(QPalette.Dark, QColor(30, 300, 30))
+        palette.setColor(QPalette.Dark, QColor(30, 30, 30))
         palette.setColor(QPalette.Mid, QColor(45, 45, 45))
         palette.setColor(QPalette.Shadow, QColor(20, 20, 20))
         palette.setColor(QPalette.Button, QColor(60, 60, 60))
         self.setPalette(palette)
 
-        font = QFont("Segoe UI", 10)
+        font = QFont("High Tower Text", 11)
         if sys.platform == "darwin":
              font = QFont("Helvetica Neue", 11)
         QApplication.setFont(font)
@@ -490,21 +551,120 @@ class MainWindow(QMainWindow):
                 self.add_ribbon_button(*action)
 
         elif section == "Settings":
-            lbl = QLabel("⚙ Settings panel (coming soon)")
-            lbl.setStyleSheet("color:#ffd700; font-weight: bold;")
-            self.ribbon_options_layout.addWidget(lbl)
+            # 1. Show Ext Toggle
+            ext_box = QCheckBox("Show Extensions in Name")
+            ext_box.setChecked(self.proxy_model.show_extensions)
+            ext_box.setStyleSheet("color: #ffd700; font-size: 10pt;")
+            ext_box.toggled.connect(self.proxy_model.set_show_extensions)
+            self.ribbon_options_layout.addWidget(ext_box)
+
+            # Separator
+            line = QFrame()
+            line.setFrameShape(QFrame.VLine)
+            line.setFrameShadow(QFrame.Sunken)
+            line.setStyleSheet("background-color: #555;")
+            self.ribbon_options_layout.addWidget(line)
+
+            # 2. View Mode (List vs Grid)
+            mode_group = QGroupBox("View Mode")
+            mode_group.setStyleSheet("QGroupBox { border: none; color: #ffd700; }")
+            mode_layout = QHBoxLayout()
+            mode_layout.setContentsMargins(0,0,0,0)
+            
+            rb_list = QRadioButton("List")
+            rb_grid = QRadioButton("Grid")
+            rb_list.setStyleSheet("color: #ccc;")
+            rb_grid.setStyleSheet("color: #ccc;")
+            
+            if self.view_stack.currentIndex() == 0: rb_list.setChecked(True)
+            else: rb_grid.setChecked(True)
+            
+            bg = QButtonGroup(mode_group) # Keep references
+            bg.addButton(rb_list)
+            bg.addButton(rb_grid)
+            
+            rb_list.toggled.connect(lambda c: c and self.view_stack.setCurrentIndex(0))
+            rb_grid.toggled.connect(lambda c: c and self.view_stack.setCurrentIndex(1))
+            
+            mode_layout.addWidget(rb_list)
+            mode_layout.addWidget(rb_grid)
+            mode_group.setLayout(mode_layout)
+            self.ribbon_options_layout.addWidget(mode_group)
+            
+            line2 = QFrame()
+            line2.setFrameShape(QFrame.VLine)
+            line2.setStyleSheet("background-color: #555;")
+            self.ribbon_options_layout.addWidget(line2)
+
+            # 3. Columns (Only for List View)
+            col_group = QGroupBox("Columns")
+            col_group.setStyleSheet("QGroupBox { border: none; color: #ffd700; }")
+            col_layout = QHBoxLayout()
+            col_layout.setContentsMargins(0,0,0,0)
+            
+            # Columns: 1=Size, 2=Type, 3=Date Modified (Name is 0, always shown)
+            for name, col_idx in [("Size", 1), ("Type", 2), ("Date", 3)]:
+                cb = QCheckBox(name)
+                cb.setChecked(not self.file_view.isColumnHidden(col_idx))
+                cb.setStyleSheet("color: #ccc;")
+                cb.toggled.connect(lambda c, idx=col_idx: self.file_view.setColumnHidden(idx, not c))
+                col_layout.addWidget(cb)
+            
+            col_group.setLayout(col_layout)
+            self.ribbon_options_layout.addWidget(col_group)
+            
+            line3 = QFrame()
+            line3.setFrameShape(QFrame.VLine)
+            line3.setStyleSheet("background-color: #555;")
+            self.ribbon_options_layout.addWidget(line3)
+
+            # 4. Font Settings
+            font_group = QGroupBox("Font")
+            font_group.setStyleSheet("QGroupBox { border: none; color: #ffd700; }")
+            font_layout = QHBoxLayout()
+            font_layout.setContentsMargins(0,0,0,0)
+            
+            self.font_combo = QFontComboBox()
+            self.font_combo.setCurrentFont(QApplication.font())
+            self.font_combo.currentFontChanged.connect(self.update_app_font)
+            # Custom styling for QFontComboBox is tricky, but let's try basic colors
+            self.font_combo.setStyleSheet("background: #333; color: #fff; border: 1px solid #555;")
+            
+            self.font_size = QSpinBox()
+            self.font_size.setRange(8, 24)
+            self.font_size.setValue(QApplication.font().pointSize())
+            self.font_size.valueChanged.connect(self.update_app_font)
+            self.font_size.setStyleSheet("background: #333; color: #fff; border: 1px solid #555;")
+
+            font_layout.addWidget(self.font_combo)
+            font_layout.addWidget(self.font_size)
+            font_group.setLayout(font_layout)
+            self.ribbon_options_layout.addWidget(font_group)
 
         self.ribbon_options_layout.addStretch() # Pushes buttons to the left
         self.header_section = section
 
+    def update_app_font(self):
+        font = self.font_combo.currentFont()
+        font.setPointSize(self.font_size.value())
+        QApplication.setFont(font)
+        # Force update of some widgets that might not automatically pick it up immediately
+        self.file_view.setFont(font)
+        self.nav_tree.setFont(font)
+        self.path_edit.setFont(font)
+
+
     def add_ribbon_button(self, label, handler, icon_file):
         btn = QPushButton()
         btn.setToolTip(label.replace("_", " ").title())
-        icon_path = os.path.join("assets", "file_icons", icon_file)
+        
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        icon_path = os.path.join(base_dir, "assets", "file_icons", icon_file)
 
         if os.path.exists(icon_path):
             btn.setIcon(QIcon(icon_path))
-            btn.setIconSize(QSize(32, 32))
+            # --- FIXED: Increased icon size to better fit the button ---
+            btn.setIconSize(QSize(70, 70))
             btn.setStyleSheet(self.get_button_style())
         else:
             fallback_texts = {"back": "⬅", "forward": "➡", "move": "📂", "commandprompt": "🖥", "about": "ℹ", "close": "❌"}
@@ -515,10 +675,11 @@ class MainWindow(QMainWindow):
         self.ribbon_options_layout.addWidget(btn)
 
     def get_button_style(self):
+        # Adjusted padding to better center the larger icon
         return """
             QPushButton {
                 background-color: #333333; color: #ffd700; border: 1px solid #555555;
-                border-radius: 6px; padding: 12px;
+                border-radius: 6px; padding: 7px;
                 min-width: 50px; min-height: 50px;
                 max-width: 50px; max-height: 50px;
                 margin: 2px;
@@ -670,7 +831,11 @@ class MainWindow(QMainWindow):
         except PermissionError: pass
 
     def open_file(self, index):
-        path = self.model.filePath(index)
+        # Allow opening from both list and grid views
+        # Map proxy index back to source index
+        source_index = self.proxy_model.mapToSource(index)
+        path = self.model.filePath(source_index)
+        
         if os.path.isdir(path):
             self.navigate_to_directory(path)
         elif os.path.isfile(path):
@@ -685,16 +850,63 @@ class MainWindow(QMainWindow):
         os.system('start cmd')
 
     def show_about(self):
-        QMessageBox.information(self, "About", "BrontoBase File Manager\nVersion 1.0\nPowered by PyQt5")
+        QMessageBox.information(self, "About", "BrontoSphere File Manager\nVersion 1.0\nPowered by PyQt5")
 
     def get_selected_paths(self):
-        return [self.model.filePath(idx) for idx in self.file_view.selectionModel().selectedRows(0)]
+        # Determine active view
+        if self.view_stack.currentIndex() == 0:
+            view = self.file_view
+        else:
+            view = self.file_grid_view
+            
+        indexes = view.selectionModel().selectedIndexes()
+        if not indexes: return []
+        
+        # Filter for column 0 (names) to avoid duplicates in list view
+        # Grid view is only column 0 effectively, but let's be safe
+        paths = []
+        for idx in indexes:
+            if idx.column() == 0:
+                source_idx = self.proxy_model.mapToSource(idx)
+                paths.append(self.model.filePath(source_idx))
+        return list(set(paths)) # Remove duplicates if any
 
     def get_current_dir(self):
-        return self.model.filePath(self.file_view.rootIndex())
+        # Use proxy model's mapping
+        return self.model.filePath(self.proxy_model.mapToSource(self.file_view.rootIndex()))
 
     def refresh_current_dir(self):
         self.navigate_to_directory(self.get_current_dir(), record_history=False)
+
+    def navigate_to_directory(self, path, record_history=True):
+        if not os.path.exists(path): return
+        
+        # We need to map the source model index for 'path' to the proxy model index
+        src_index = self.model.index(path)
+        proxy_index = self.proxy_model.mapFromSource(src_index)
+        
+        self.file_view.setRootIndex(proxy_index)
+        self.file_grid_view.setRootIndex(proxy_index)
+        
+        self.path_edit.setText(path)
+        
+        if record_history:
+            self.navigation_history.add_to_history(path)
+            
+        # Update window title
+        self.setWindowTitle(f"{os.path.basename(path)} - BrontoASPHERE File Manager")
+
+    def on_back(self):
+        path = self.navigation_history.go_back()
+        if path: self.navigate_to_directory(path, record_history=False)
+
+    def on_forward(self):
+        path = self.navigation_history.go_forward()
+        if path: self.navigate_to_directory(path, record_history=False)
+
+    def on_search(self):
+        search_dialog = SearchDialog(self, self.file_searcher, self.get_current_dir())
+        search_dialog.exec_()
 
     def on_copy(self):
         self.clipboard_paths = self.get_selected_paths()
@@ -825,7 +1037,11 @@ class MainWindow(QMainWindow):
         path = self.nav_model.itemFromIndex(index).data(Qt.UserRole)
         if path and os.path.exists(path):
             if os.path.isfile(path):
-                self.open_file(None) # Re-use open_file logic
+                # --- FIXED: Directly open the file path ---
+                try:
+                    os.startfile(path)
+                except Exception as e:
+                    QMessageBox.warning(self, "Open Error", f"Could not open file:\n{e}")
             else:
                 self.navigate_to_directory(path)
 
@@ -833,35 +1049,7 @@ class MainWindow(QMainWindow):
         if self.favorites_manager.remove_favorite(path):
             self.build_navigation_tree()
 
-    def navigate_to_directory(self, path, record_history=True):
-        if not os.path.exists(path) or not os.path.isdir(path):
-            return
-        current_path = self.get_current_dir()
-        if record_history and current_path and current_path != path:
-            self.navigation_history.add_to_history(current_path)
-        self.file_view.setRootIndex(self.model.index(path))
-        self.file_view.sortByColumn(3, Qt.DescendingOrder)
-        self.path_edit.setText(path)
 
-    def on_back(self):
-        previous_path = self.navigation_history.go_back()
-        if previous_path:
-            self.navigate_to_directory(previous_path, record_history=False)
-            self.status_bar.showMessage(f"Back to: {previous_path}", 2000)
-        else:
-            self.status_bar.showMessage("No more history to go back", 2000)
-
-    def on_forward(self):
-        next_path = self.navigation_history.go_forward()
-        if next_path:
-            self.navigate_to_directory(next_path, record_history=False)
-            self.status_bar.showMessage(f"Forward to: {next_path}", 2000)
-        else:
-            self.status_bar.showMessage("No more history to go forward", 2000)
-
-    def on_search(self):
-        search_dialog = SearchDialog(self, self.file_searcher, self.get_current_dir())
-        search_dialog.exec_()
 
     def ps_copy(self, src, dest):
         import subprocess
@@ -879,6 +1067,40 @@ class MainWindow(QMainWindow):
         import subprocess
         os.makedirs(os.path.dirname(dest_zip), exist_ok=True)
         subprocess.run(["powershell", "-NoProfile", "-Command", f"Compress-Archive -Path '{source_dir}\\*' -DestinationPath '{dest_zip}' -Force"], check=True, shell=True)
+
+    def on_file_context_menu(self, position):
+        # Determine sender view
+        view = self.sender()
+        index = view.indexAt(position)
+        if not index.isValid(): return
+
+        # Map to source model to get file path
+        source_index = self.proxy_model.mapToSource(index)
+        if not source_index.isValid(): return
+        
+        file_path = self.model.filePath(source_index)
+        
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background-color: #2a2a2a; color: #ccc; border: 1px solid #555; }
+            QMenu::item { padding: 5px 20px; }
+            QMenu::item:selected { background-color: #ffd700; color: #000; }
+        """)
+        
+        open_action = menu.addAction("Open")
+        menu.addSeparator()
+        properties_action = menu.addAction("Properties")
+
+        action = menu.exec_(view.mapToGlobal(position))
+        
+        if action == open_action:
+            self.open_file(index)
+        elif action == properties_action:
+            self.show_file_properties(file_path)
+
+    def show_file_properties(self, path):
+        dialog = FilePropertiesDialog(self, path)
+        dialog.exec_()
 
 class SearchDialog(QDialog):
     """Search dialog for finding files"""
@@ -1164,6 +1386,99 @@ class SearchDialog(QDialog):
         self.search_results = []
         self.open_btn.setEnabled(False)
         self.navigate_btn.setEnabled(False)
+
+
+
+
+class FilePropertiesDialog(QDialog):
+    def __init__(self, parent, path):
+        super().__init__(parent)
+        self.path = path
+        self.setWindowTitle(f"{os.path.basename(path)} Properties")
+        self.setFixedSize(400, 500)
+        
+        layout = QVBoxLayout()
+        
+        # Tabs
+        tabs = QTabWidget()
+        tabs.setStyleSheet("""
+            QTabWidget::pane { border: 1px solid #444; }
+            QTabBar::tab { background: #333; color: #ccc; padding: 8px; }
+            QTabBar::tab:selected { background: #444; color: #ffd700; }
+        """)
+        
+        # General Tab
+        general_tab = QWidget()
+        gen_layout = QFormLayout()
+        gen_layout.setSpacing(10)
+        
+        info = QFileInfo(path)
+        
+        # Icon & Name
+        name_label = QLabel(os.path.basename(path))
+        name_label.setStyleSheet("font-size: 14pt; font-weight: bold; color: #ffd700;")
+        gen_layout.addRow(QLabel("Name:"), name_label)
+        
+        gen_layout.addRow(QLabel("Type:"), QLabel("File folder" if os.path.isdir(path) else "File"))
+        gen_layout.addRow(QLabel("Location:"), QLabel(os.path.dirname(path)))
+        
+        size = info.size()
+        size_str = self.format_size(size)
+        gen_layout.addRow(QLabel("Size:"), QLabel(size_str))
+        
+        created = info.created().toString("yyyy-MM-dd HH:mm:ss")
+        modified = info.lastModified().toString("yyyy-MM-dd HH:mm:ss")
+        accessed = info.lastRead().toString("yyyy-MM-dd HH:mm:ss")
+        
+        gen_layout.addRow(QLabel("Created:"), QLabel(created))
+        gen_layout.addRow(QLabel("Modified:"), QLabel(modified))
+        gen_layout.addRow(QLabel("Accessed:"), QLabel(accessed))
+        
+        # Attributes
+        attrs = []
+        if info.isReadable(): attrs.append("Readable")
+        if info.isWritable(): attrs.append("Writable")
+        if info.isHidden(): attrs.append("Hidden")
+        gen_layout.addRow(QLabel("Attributes:"), QLabel(", ".join(attrs)))
+
+        general_tab.setLayout(gen_layout)
+        tabs.addTab(general_tab, "General")
+        
+        # Details Tab (Placeholder)
+        details_tab = QWidget()
+        det_layout = QVBoxLayout()
+        det_layout.addWidget(QLabel("Additional details..."))
+        details_tab.setLayout(det_layout)
+        # tabs.addTab(details_tab, "Details") 
+        
+        layout.addWidget(tabs)
+        
+        btn_box = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        ok_btn.clicked.connect(self.accept)
+        btn_box.addStretch()
+        btn_box.addWidget(ok_btn)
+        
+        layout.addLayout(btn_box)
+        self.setLayout(layout)
+        self.apply_dark_theme()
+
+    def format_size(self, size_bytes):
+        if size_bytes < 1024: return f"{size_bytes} bytes"
+        elif size_bytes < 1024**2: return f"{size_bytes/1024:.2f} KB"
+        elif size_bytes < 1024**3: return f"{size_bytes/1024**2:.2f} MB"
+        else: return f"{size_bytes/1024**3:.2f} GB"
+
+    def apply_dark_theme(self):
+        self.setStyleSheet("""
+            QDialog { background-color: #2a2a2a; color: #ccc; }
+            QLabel { color: #ccc; }
+            QPushButton {
+                background-color: #333; color: #ffd700; border: 1px solid #555;
+                border-radius: 4px; padding: 6px 12px;
+            }
+            QPushButton:hover { background-color: #444; border-color: #ffd700; }
+        """)
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)

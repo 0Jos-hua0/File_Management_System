@@ -3,152 +3,13 @@ import subprocess
 import re
 from typing import List, Dict, Optional
 from pathlib import Path
-from difflib import SequenceMatcher
 
 
 class FileSearcher:
-    """Enhanced file search functionality like Windows File Explorer"""
+    """Enhanced file search functionality"""
     
     def __init__(self):
         self.search_results = []
-    
-    def search_files_windows_style(self, search_text: str, file_type: str = "", search_directory: str = "") -> List[Dict[str, any]]:
-        """Search files like Windows File Explorer with fuzzy matching"""
-        if not search_text.strip():
-            return []
-        
-        # If no directory specified, search from root drives
-        if not search_directory:
-            search_directories = self._get_search_directories()
-        else:
-            search_directories = [search_directory]
-        
-        all_results = []
-        
-        for directory in search_directories:
-            if os.path.exists(directory):
-                results = self._search_directory_windows_style(directory, search_text, file_type)
-                all_results.extend(results)
-        
-        # Sort by relevance (similarity score)
-        all_results.sort(key=lambda x: x['similarity'], reverse=True)
-        
-        return all_results
-    
-    def _get_search_directories(self) -> List[str]:
-        """Get directories to search in (like Windows File Explorer)"""
-        directories = []
-        
-        # Add user's home directory and common folders
-        home_dir = os.path.expanduser("~")
-        if os.path.exists(home_dir):
-            directories.append(home_dir)
-        
-        # Add Windows drives
-        if os.name == 'nt':
-            import string
-            for drive in string.ascii_uppercase:
-                drive_path = f"{drive}:\\"
-                if os.path.exists(drive_path):
-                    directories.append(drive_path)
-        
-        return directories
-    
-    def _search_directory_windows_style(self, directory: str, search_text: str, file_type: str = "") -> List[Dict[str, any]]:
-        """Search a directory with Windows-style fuzzy matching"""
-        results = []
-        search_text_lower = search_text.lower()
-        
-        try:
-            # Build PowerShell command for recursive search
-            cmd = [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                f"Get-ChildItem -Path '{directory}' -Recurse -File | Select-Object FullName, Name, Length, LastWriteTime, Extension"
-            ]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-            
-            if result.returncode == 0 and result.stdout:
-                lines = result.stdout.strip().splitlines()
-                
-                for line in lines[1:]:  # Skip header
-                    if line.strip():
-                        parts = line.split()
-                        if len(parts) >= 4:
-                            file_path = parts[0]
-                            file_name = parts[1]
-                            file_size = int(parts[2]) if parts[2].isdigit() else 0
-                            file_extension = parts[3] if len(parts) > 3 else ""
-                            modified_date = ' '.join(parts[4:]) if len(parts) > 4 else ""
-                            
-                            # Check if file matches search criteria
-                            if self._matches_search_criteria(file_name, file_extension, search_text_lower, file_type):
-                                similarity = self._calculate_similarity(file_name, search_text)
-                                
-                                results.append({
-                                    'path': file_path,
-                                    'name': file_name,
-                                    'size': file_size,
-                                    'extension': file_extension,
-                                    'modified': modified_date,
-                                    'similarity': similarity
-                                })
-        
-        except (subprocess.TimeoutExpired, subprocess.SubprocessError, Exception):
-            pass
-        
-        return results
-    
-    def _matches_search_criteria(self, file_name: str, file_extension: str, search_text: str, file_type: str) -> bool:
-        """Check if file matches search criteria"""
-        file_name_lower = file_name.lower()
-        file_ext_lower = file_extension.lower().lstrip('.')
-        
-        # Check if search text is in filename (case insensitive)
-        if search_text in file_name_lower:
-            # If file type is specified, check if it matches
-            if file_type:
-                return file_type.lower() in file_ext_lower
-            return True
-        
-        # Check for partial matches (like Windows File Explorer)
-        search_words = search_text.split()
-        for word in search_words:
-            if word in file_name_lower:
-                # If file type is specified, check if it matches
-                if file_type:
-                    return file_type.lower() in file_ext_lower
-                return True
-        
-        return False
-    
-    def _calculate_similarity(self, file_name: str, search_text: str) -> float:
-        """Calculate similarity score between filename and search text"""
-        file_name_lower = file_name.lower()
-        search_text_lower = search_text.lower()
-        
-        # Exact match gets highest score
-        if file_name_lower == search_text_lower:
-            return 1.0
-        
-        # Starts with search text gets high score
-        if file_name_lower.startswith(search_text_lower):
-            return 0.9
-        
-        # Contains search text gets medium score
-        if search_text_lower in file_name_lower:
-            return 0.7
-        
-        # Use sequence matcher for fuzzy matching
-        similarity = SequenceMatcher(None, file_name_lower, search_text_lower).ratio()
-        
-        # Boost score if search text is a substring
-        if search_text_lower in file_name_lower:
-            similarity += 0.3
-        
-        return min(similarity, 1.0)
     
     def search_files(self, directory: str, pattern: str, recursive: bool = True) -> List[str]:
         """Search for files using PowerShell Get-ChildItem"""
@@ -286,6 +147,83 @@ class FileSearcher:
             i += 1
         
         return f"{size_bytes:.1f} {size_names[i]}"
+    
+    def search_files_windows_style(self, search_term: str, file_types: str = "", search_directory: str = "") -> List[Dict[str, any]]:
+        """Windows-style search that finds files with similar names across the file system"""
+        import difflib
+        
+        if not search_term.strip():
+            return []
+        
+        # Parse file types
+        extensions = []
+        if file_types.strip():
+            extensions = [ext.strip().lower() for ext in file_types.split(",")]
+            # Add dot if not present
+            extensions = [ext if ext.startswith('.') else f'.{ext}' for ext in extensions]
+        
+        # Build PowerShell command for system-wide search
+        if search_directory and os.path.exists(search_directory):
+            # Search in specific directory
+            base_path = search_directory
+        else:
+            # Search across all drives
+            base_path = "C:\\"
+        
+        try:
+            # Build file filter
+            file_filter = ""
+            if extensions:
+                ext_filter = ",".join([f"*{ext}" for ext in extensions])
+                file_filter = f"-Include {ext_filter}"
+            
+            # Search for files with similar names
+            cmd = [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                f"Get-ChildItem -Path '{base_path}' -Recurse -File {file_filter} | Where-Object {{$_.Name -like '*{search_term}*'}} | Select-Object FullName, Name, Length, LastWriteTime, Extension | Sort-Object Name"
+            ]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+            
+            if result.returncode == 0 and result.stdout:
+                lines = result.stdout.strip().splitlines()
+                results = []
+                
+                for line in lines[1:]:  # Skip header
+                    if line.strip():
+                        parts = line.split()
+                        if len(parts) >= 4:
+                            # Parse the output (format: FullName Name Length LastWriteTime Extension)
+                            full_path = parts[0]
+                            name = parts[1]
+                            size = int(parts[2]) if parts[2].isdigit() else 0
+                            modified = ' '.join(parts[3:-1]) if len(parts) > 4 else parts[3]
+                            extension = parts[-1] if len(parts) > 4 else ""
+                            
+                            # Calculate similarity score
+                            similarity = difflib.SequenceMatcher(None, search_term.lower(), name.lower()).ratio()
+                            
+                            results.append({
+                                'path': full_path,
+                                'name': name,
+                                'size': size,
+                                'modified': modified,
+                                'extension': extension,
+                                'similarity': similarity
+                            })
+                
+                # Sort by similarity score (highest first)
+                results.sort(key=lambda x: x['similarity'], reverse=True)
+                
+                # Limit results to top 100
+                return results[:100]
+            
+            return []
+            
+        except (subprocess.TimeoutExpired, subprocess.SubprocessError, Exception):
+            return []
 
 
 # Legacy function for backward compatibility
